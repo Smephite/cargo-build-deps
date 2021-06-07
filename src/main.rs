@@ -36,10 +36,22 @@ fn main() -> Result<(), String> {
     execute_command(Command::new("cargo").arg("update"))?;
 
     let cargo_toml = get_toml("Cargo.toml");
-    let top_pkg_name = parse_package_name(&cargo_toml);
 
+    
     let cargo_lock = get_toml("Cargo.lock");
-    let deps = parse_deps(&cargo_lock, top_pkg_name)?;
+    
+    let mut top_names = vec![];
+
+    if is_package(&cargo_toml)
+    {
+        top_names.push(parse_package_name(&cargo_toml));
+    }
+
+    for member_toml in find_workspace_children(&cargo_toml) {
+        top_names.push(parse_package_name(&member_toml))
+    } 
+
+    let deps = parse_deps(&cargo_lock, &top_names)?;
 
     println!("building packages: {:?}", deps);
 
@@ -61,13 +73,51 @@ fn get_toml(file_path: &str) -> Toml {
     toml_string.parse().expect("failed to parse toml")
 }
 
-fn parse_package_name(toml: &Toml) -> &str {
+fn is_package(toml: &Toml) -> bool {
+    match toml {
+        &Toml::Table(ref table) => {
+            table.contains_key("package")
+        }
+        _ => panic!("failed to parse Cargo.toml: incorrect format"),
+    }
+}
+
+fn find_workspace_children(toml: &Toml) -> Vec<Toml> {
+    match toml {
+        &Toml::Table(ref table) => {
+            match table.get("workspace") {
+                Some(&Toml::Table(ref table)) => {
+                    match table.get("members") {
+                        Some(&Toml::Array(ref members)) => {
+                            let mut tomls = vec![];
+                            for member in members
+                            {
+                                let mut path = match member {
+                                    &Toml::String(ref path) => path.to_string(),
+                                    _ => panic!("faield to parse path")
+                                };
+                                path.push_str("/cargo.toml");
+                                tomls.push(get_toml(&path));
+                            }
+                            tomls
+                        },
+                        _ => panic!("failed to parse members"),
+                    }
+                }
+                _ => vec![],
+            }
+        }
+        _ => panic!("failed to parse Cargo.toml: incorrect format"),
+    }
+}
+
+fn parse_package_name(toml: &Toml) -> String {
     match toml {
         &Toml::Table(ref table) => {
             match table.get("package") {
                 Some(&Toml::Table(ref table)) => {
                     match table.get("name") {
-                        Some(&Toml::String(ref name)) => name,
+                        Some(&Toml::String(ref name)) => name.to_owned(),
                         _ => panic!("failed to parse name"),
                     }
                 }
@@ -121,26 +171,29 @@ fn crate_name_version(toml: &Toml, crate_name: &str) -> Result<String, String> {
     }
 }
 
-fn parse_deps(toml: &Toml, top_pkg_name: &str) -> Result<Vec<String>, String> {
-    match cargo_lock_find_package(toml, top_pkg_name)? {
-        &Toml::Table(ref pkg) => {
-            match pkg.get("dependencies") {
-                Some(&Toml::Array(ref deps_toml_array)) => {
-                    deps_toml_array.iter()
-                        .map(|value| {
-                            if let Some(crate_name) = value.as_str() {
-                                crate_name_version(toml, crate_name)
-                            } else {
-                                Err("Empty dependency".to_string())
-                            }
-                        })
-                        .collect()
+fn parse_deps(toml: &Toml, top_pkg_names: &Vec<String>) -> Result<Vec<String>, String> {
+    let mut deps = vec![];
+    for top_pkg_name in top_pkg_names {
+        match cargo_lock_find_package(toml, &top_pkg_name)? {
+            &Toml::Table(ref pkg) => {
+                match pkg.get("dependencies") {
+                    Some(&Toml::Array(ref deps_toml_array)) => {
+                        deps_toml_array.iter()
+                            .for_each(|value| {
+                                if let Some(crate_name) = value.as_str() {
+                                    deps.push(crate_name_version(toml, crate_name).unwrap());
+                                }
+                            });
+                    },
+                    _ => {}
                 }
-                _ => Err("error parsing dependencies table".to_string()),
             }
-        }
-        _ => Err("error parsing dependencies table".to_string()),
+            _ => panic!("error parsing dependencies table"),
+        };
     }
+    
+    deps.dedup();
+    Ok(deps)
 }
 
 fn build_package(
