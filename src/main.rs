@@ -94,9 +94,12 @@ fn find_workspace_children(toml: &Toml) -> Vec<Toml> {
                             {
                                 let mut path = match member {
                                     &Toml::String(ref path) => path.to_string(),
-                                    _ => panic!("faield to parse path")
+                                    _ => panic!("failed to parse path")
                                 };
                                 path.push_str("/cargo.toml");
+                                if !std::path::Path::new(&path).exists() {
+                                    continue;
+                                }
                                 tomls.push(get_toml(&path));
                             }
                             tomls
